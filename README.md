@@ -1,1 +1,1 @@
-# obsidian-to-jira
+# Obsidian to Jira Plugin
