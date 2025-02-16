@@ -13,7 +13,11 @@ interface ObsidianHealtcheckResponse {
 interface Task {
 	id?: string;
 	title: string;
-	description: string;
+	description: {
+		type: string;
+		version: number;
+		content: Array<JiraContent>;
+	};
 }
 
 interface JiraTasks {
@@ -22,6 +26,14 @@ interface JiraTasks {
 			summary: string;
 		};
 		id: string;
+	}>;
+}
+
+interface JiraContent {
+	type: string;
+	content: Array<{
+		type: string;
+		text: string;
 	}>;
 }
 
@@ -164,21 +176,7 @@ export default class ObsidianToJiraPlugin extends Plugin {
 									key: this.settings.projectId,
 								},
 								summary: task.title,
-								description: {
-									type: "doc",
-									version: 1,
-									content: [
-										{
-											type: "paragraph",
-											content: [
-												{
-													type: "text",
-													text: task.description,
-												},
-											],
-										},
-									],
-								},
+								description: task.description,
 								issuetype: {
 									name: "Task",
 								},
@@ -200,26 +198,13 @@ export default class ObsidianToJiraPlugin extends Plugin {
 		let tasksCount = 0;
 		await Promise.all(
 			tasks.map(async (task) => {
+				console.log(task.description);
 				if (task.id) {
 					tasksCount++;
 					await this.apiService.put(`/issue/${task.id}`, {
 						fields: {
 							summary: task.title,
-							description: {
-								type: "doc",
-								version: 1,
-								content: [
-									{
-										type: "paragraph",
-										content: [
-											{
-												type: "text",
-												text: task.description,
-											},
-										],
-									},
-								],
-							},
+							description: task.description,
 							issuetype: {
 								name: "Task",
 							},
@@ -244,11 +229,24 @@ export default class ObsidianToJiraPlugin extends Plugin {
 			const fileContents = await this.app.vault.read(file);
 
 			const extractedData = this.extractData(fileContents);
-
+			// this.app.vault.modify(file);
+			console.log(fileContents);
 			return extractedData;
 		} else {
 			new Notice("No active file found.");
 		}
+	}
+
+	setJiraContent(type: string, text: string): JiraContent {
+		return {
+			type,
+			content: [
+				{
+					type: "text",
+					text,
+				},
+			],
+		};
 	}
 
 	extractData(content: string): Task[] {
@@ -258,35 +256,54 @@ export default class ObsidianToJiraPlugin extends Plugin {
 		let match;
 
 		while ((match = blockRegex.exec(content)) !== null) {
-			const blockTitle = match[1];
-			const blockContent = match[2];
+			const title = match[1].trim();
+			const descriptionContent = match[2].trim();
 
-			const descriptionMatch = blockContent.match(
-				/(?<=\*\*Description\*\*:\s)([\s\S]*)/
+			const description = {
+				text: "",
+				code: "",
+			};
+
+			const descriptionMatch = descriptionContent.match(
+				/(?<=\*\*Description\*\*:\s)([\s\S]*?)(?=\n*(?:```|\*\*|$))/
 			);
+			if (descriptionMatch) {
+				description.text = descriptionMatch[1].trim();
+			}
 
-			let description = descriptionMatch
-				? descriptionMatch[1].trim()
-				: "Not specified";
-
-			description = description.replace(
-				/```([a-zA-Z]*)\s?([\s\S]*?)```/g,
-				(match, lang, code) => {
-					const singleLineCode = code.replace(/\n/g, " ").trim();
-					return `\`\`\`${singleLineCode}\n\`\`\``;
+			const codeBlocks: string[] = [];
+			descriptionContent.replace(
+				/```[a-zA-Z]*\s*([\s\S]*?)```/g,
+				(_, code) => {
+					codeBlocks.push(code.trim());
+					return "";
 				}
 			);
 
-			description = description.replace(
-				/\[([^\]]+)\]\(([^)]+)\)/g,
-				(match, text, url) => {
-					return `[${text}|${url}]`;
-				}
-			);
+			description.code = codeBlocks.join("\n");
+
+			const textWithoutCode = descriptionContent
+				.replace(/```[a-zA-Z]*\s*([\s\S]*?)```/g, "")
+				.trim();
+			description.text = description.text || textWithoutCode;
 
 			data.push({
-				title: blockTitle.trim(),
-				description,
+				title,
+				description: {
+					type: "doc",
+					version: 1,
+					content: [
+						this.setJiraContent("paragraph", description.text),
+						...(description.code
+							? [
+									this.setJiraContent(
+										"codeBlock",
+										description.code
+									),
+							]
+							: []),
+					],
+				},
 			});
 		}
 
